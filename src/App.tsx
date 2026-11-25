@@ -23,8 +23,10 @@ import { buildStoryboardGraph } from './core/diffParser.ts';
 import { DEMO_FEATURE_DIFF, DEMO_POLYGLOT_DIFF, DEMO_UNIFIED_DIFF } from './core/demoDataset.ts';
 import type { ImpactLevel, ImpactNode, StoryboardGraph } from './core/types.ts';
 import { DiffDrawer } from './components/DiffDrawer.tsx';
+import { SchemaDriftStudio } from './components/SchemaDriftStudio.tsx';
 
 type LayoutMode = 'swimlanes' | 'impact' | 'radial';
+type AppMode = 'git-flow' | 'schema-drift';
 
 const IMPACT_BORDER: Record<ImpactLevel, string> = {
   high: 'border-rose-500/75 shadow-[0_0_28px_-6px_rgba(244,63,94,0.45)]',
@@ -99,8 +101,10 @@ export function App() {
       isDemo: true,
     }),
   );
+  const [appMode, setAppMode] = useState<AppMode>('git-flow');
   const [rangeMode, setRangeMode] = useState<string>('demo-auth');
   const [layoutMode, setLayoutMode] = useState<LayoutMode>('swimlanes');
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => new Set());
   const [nodes, setNodes] = useState<ImpactNode[]>(() => computeLayout(graph.nodes, 'swimlanes'));
   const [selectedId, setSelectedId] = useState<string | null>(graph.nodes[0]?.id ?? null);
   const [search, setSearch] = useState('');
@@ -165,7 +169,27 @@ export function App() {
 
   const handleLayoutChange = (mode: LayoutMode) => {
     setLayoutMode(mode);
-    setNodes((prev) => computeLayout(prev, mode));
+    setNodes((prev) => {
+      const laid = computeLayout(prev, mode);
+      return laid.map((n, i) => (pinnedIds.has(n.id) ? prev[i] : n));
+    });
+  };
+
+  const exportMarkdownReport = () => {
+    const lines = [
+      `# diffcanvas Storyboard Report (${graph.rangeLabel})`,
+      `- Files changed: ${graph.stats.filesChanged} | Symbols: ${graph.stats.symbolsChanged} | +${graph.stats.additions} / -${graph.stats.deletions}`,
+      `- Impact breakdown: ${graph.stats.highImpactCount} high, ${graph.stats.mediumImpactCount} medium, ${graph.stats.lowImpactCount} low`,
+      '',
+      '## Recommended Review Order',
+      ...tourOrder.map((n, i) => `${i + 1}. \`${n.name}\` (\`${n.filePath}\`) — **${n.impact.toUpperCase()}** (risk ${n.impactScore}, +${n.additions}/-${n.deletions})`),
+    ].join('\n');
+    const blob = new Blob([lines], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `diffcanvas-${graph.rangeLabel.replace(/[^a-z0-9-_]/gi, '_')}.md`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   };
 
   const fitToView = useCallback(() => {
@@ -520,6 +544,28 @@ export function App() {
             </div>
           </div>
 
+          <div className="flex rounded-lg border border-slate-700 bg-[#0B0F17] p-0.5 text-xs">
+            <button
+              type="button"
+              onClick={() => setAppMode('git-flow')}
+              className={`rounded-md px-2.5 py-1 font-medium transition ${
+                appMode === 'git-flow' ? 'bg-sky-500/20 text-sky-200' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Git &amp; Code Flow
+            </button>
+            <button
+              type="button"
+              onClick={() => setAppMode('schema-drift')}
+              className={`rounded-md px-2.5 py-1 font-medium transition ${
+                appMode === 'schema-drift' ? 'bg-violet-500/20 text-violet-200' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Schema Drift Studio
+            </button>
+          </div>
+
+          {appMode === 'git-flow' && (
           <div className="flex items-center gap-1.5">
             <GitBranch className="h-3.5 w-3.5 text-slate-500" />
             <select
@@ -536,6 +582,7 @@ export function App() {
               {rangeMode === 'custom' && <option value="custom">Custom Uploaded / Pasted Diff</option>}
             </select>
           </div>
+          )}
 
           <button
             type="button"
@@ -700,6 +747,13 @@ export function App() {
           </button>
           <button
             type="button"
+            onClick={exportMarkdownReport}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-[#0B0F17] px-2 py-1 text-xs text-slate-200 hover:border-violet-500"
+          >
+            <span>.md</span>
+          </button>
+          <button
+            type="button"
             onClick={exportPng}
             className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-[#0B0F17] px-2 py-1 text-xs text-slate-200 hover:border-emerald-500"
           >
@@ -708,6 +762,11 @@ export function App() {
           </button>
         </div>
       </header>
+
+      {appMode === 'schema-drift' ? (
+        <SchemaDriftStudio />
+      ) : (
+      <>
 
       {/* Paste Unified Diff Drawer */}
       {pasteOpen && (
@@ -973,9 +1032,31 @@ export function App() {
                       {node.kind}
                       {reviewed && <CheckCircle2 className="h-3 w-3 text-emerald-400" />}
                     </span>
-                    <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">
-                      risk {node.impactScore}
-                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPinnedIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(node.id)) next.delete(node.id);
+                            else next.add(node.id);
+                            return next;
+                          });
+                        }}
+                        className={`rounded px-1.5 py-0.5 font-mono text-[9px] ${
+                          pinnedIds.has(node.id)
+                            ? 'bg-sky-500/25 text-sky-200'
+                            : 'bg-slate-900 text-slate-500 hover:text-slate-200'
+                        }`}
+                        title="Pin node position during auto-layout"
+                      >
+                        {pinnedIds.has(node.id) ? 'PIN' : 'pin'}
+                      </button>
+                      <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">
+                        risk {node.impactScore}
+                      </span>
+                    </div>
                   </div>
                   <div className="mt-1 truncate font-mono text-sm font-bold text-slate-50">{node.name}</div>
                   <div className="truncate font-mono text-[11px] text-slate-400">{node.filePath}</div>
@@ -1078,6 +1159,8 @@ export function App() {
           />
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }
