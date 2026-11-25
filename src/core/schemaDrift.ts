@@ -138,6 +138,35 @@ export function parseTypeScriptSchema(source: string): Map<string, SchemaField> 
   return out;
 }
 
+export function parseGraphqlSchema(source: string): Map<string, SchemaField> {
+  const out = new Map<string, SchemaField>();
+  const lines = source.replace(/\r\n/g, '\n').split('\n');
+  let curType = '';
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const th = /^(?:type|input)\s+([A-Za-z_]\w*)/.exec(line);
+    if (th) {
+      curType = th[1];
+      continue;
+    }
+    if (line === '}') {
+      curType = '';
+      continue;
+    }
+    const fm = /^([A-Za-z_]\w*)\s*:\s*([A-Za-z0-9_[\]!]+)/.exec(line);
+    if (fm && curType) {
+      const required = fm[2].endsWith('!');
+      out.set(`${curType}.${fm[1]}`, {
+        path: `${curType}.${fm[1]}`,
+        type: fm[2].replace(/!$/, ''),
+        required,
+      });
+    }
+  }
+  return out;
+}
+
 export function parseSchemaInput(raw: string): {
   format: 'json-schema' | 'openapi' | 'typescript';
   fields: Map<string, SchemaField>;
@@ -149,10 +178,37 @@ export function parseSchemaInput(raw: string): {
       const format = parsed.openapi || parsed.components ? 'openapi' : 'json-schema';
       return { format, fields: flattenJsonSchemaProps(parsed) };
     } catch {
-      /* fallback to TS parser */
+      /* fallback */
     }
   }
+  if (/^\s*(?:type|input)\s+[A-Z]\w*\s*\{/m.test(trimmed) && !/interface\s+/.test(trimmed)) {
+    return { format: 'typescript', fields: parseGraphqlSchema(trimmed) };
+  }
   return { format: 'typescript', fields: parseTypeScriptSchema(trimmed) };
+}
+
+export function generateMigrationAdapter(report: SchemaDriftReport): string {
+  const lines: string[] = [
+    '// Auto-generated compatibility adapter from diffcanvas Schema Drift Studio',
+    'export function migratePayloadV1ToV2(input: Record<string, unknown>): Record<string, unknown> {',
+    '  const out: Record<string, unknown> = { ...input };',
+  ];
+  for (const item of report.items) {
+    const leaf = item.path.split('.').pop() ?? item.path;
+    if (item.kind === 'removed') {
+      lines.push(`  delete out[${JSON.stringify(leaf)}]; // removed in v2`);
+    } else if (item.kind === 'added' && item.severity === 'breaking') {
+      lines.push(`  if (out[${JSON.stringify(leaf)}] === undefined) out[${JSON.stringify(leaf)}] = ""; // TODO: backfill required field`);
+    } else if (item.kind === 'type-changed' && item.after?.includes('string')) {
+      lines.push(`  if (out[${JSON.stringify(leaf)}] !== undefined) out[${JSON.stringify(leaf)}] = String(out[${JSON.stringify(leaf)}]);`);
+    } else if (item.kind === 'type-changed' && (item.after?.includes('number') || item.after?.includes('integer'))) {
+      lines.push(`  if (out[${JSON.stringify(leaf)}] !== undefined) out[${JSON.stringify(leaf)}] = Number(out[${JSON.stringify(leaf)}]);`);
+    } else if (item.kind === 'required-changed' && item.after === 'required') {
+      lines.push(`  out[${JSON.stringify(leaf)}] = out[${JSON.stringify(leaf)}] ?? "default"; // now required`);
+    }
+  }
+  lines.push('  return out;', '}');
+  return lines.join('\n');
 }
 
 export function compareSchemas(beforeRaw: string, afterRaw: string): SchemaDriftReport {

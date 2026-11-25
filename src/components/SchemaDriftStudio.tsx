@@ -2,7 +2,10 @@ import { useMemo, useState } from 'react';
 import {
   AlertOctagon,
   AlertTriangle,
+  Check,
   CheckCircle2,
+  Code2,
+  Copy,
   Download,
   FileJson,
   GitCompare,
@@ -11,6 +14,7 @@ import {
 import {
   compareSchemas,
   formatDriftMarkdown,
+  generateMigrationAdapter,
   SCHEMA_DRIFT_PRESETS,
   type DriftSeverity,
 } from '../core/schemaDrift.ts';
@@ -27,8 +31,10 @@ export function SchemaDriftStudio() {
   const [afterText, setAfterText] = useState<string>(SCHEMA_DRIFT_PRESETS[0].after);
   const [sevFilter, setSevFilter] = useState<'all' | DriftSeverity>('all');
   const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set());
+  const [copiedAdapter, setCopiedAdapter] = useState(false);
 
   const report = useMemo(() => compareSchemas(beforeText, afterText), [beforeText, afterText]);
+  const adapterCode = useMemo(() => generateMigrationAdapter(report), [report]);
   const presetName = SCHEMA_DRIFT_PRESETS.find((p) => p.id === presetId)?.name ?? 'Custom Schema';
 
   const visibleItems = useMemo(
@@ -254,6 +260,33 @@ export function SchemaDriftStudio() {
                 );
               })}
             </div>
+          </div>
+
+          {/* Auto-Generated TypeScript Compatibility Adapter */}
+          <div className="space-y-2 rounded-xl border border-slate-800 bg-[#090D16] p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-sky-300">
+                <Code2 className="h-3.5 w-3.5" />
+                <span>Auto-Generated TS Compatibility Adapter</span>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(adapterCode);
+                    setCopiedAdapter(true);
+                    setTimeout(() => setCopiedAdapter(false), 1500);
+                  } catch {}
+                }}
+                className="inline-flex items-center gap-1 rounded border border-slate-700 bg-[#111827] px-2 py-0.5 font-mono text-[10px] text-sky-300 hover:border-sky-500"
+              >
+                {copiedAdapter ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                Copy Adapter
+              </button>
+            </div>
+            <pre className="max-h-48 overflow-auto rounded-lg border border-slate-800 bg-[#111827] p-3 font-mono text-[11px] leading-5 text-emerald-200">
+              {adapterCode}
+            </pre>
           </div>
         </section>
       </div>

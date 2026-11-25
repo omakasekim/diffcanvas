@@ -24,6 +24,7 @@ import { DEMO_FEATURE_DIFF, DEMO_POLYGLOT_DIFF, DEMO_UNIFIED_DIFF } from './core
 import type { ImpactLevel, ImpactNode, StoryboardGraph } from './core/types.ts';
 import { DiffDrawer } from './components/DiffDrawer.tsx';
 import { SchemaDriftStudio } from './components/SchemaDriftStudio.tsx';
+import { computePrMetrics } from './core/prMetrics.ts';
 
 type LayoutMode = 'swimlanes' | 'impact' | 'radial';
 type AppMode = 'git-flow' | 'schema-drift';
@@ -114,6 +115,9 @@ export function App() {
   const [focusBlast, setFocusBlast] = useState(false);
   const [showChecklist, setShowChecklist] = useState(false);
   const [reviewedIds, setReviewedIds] = useState<Set<string>>(() => new Set());
+  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const [cmdQuery, setCmdQuery] = useState('');
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState('');
   const [dragOver, setDragOver] = useState(false);
@@ -175,14 +179,20 @@ export function App() {
     });
   };
 
+  const prMetrics = useMemo(() => computePrMetrics(graph), [graph]);
+
   const exportMarkdownReport = () => {
     const lines = [
       `# diffcanvas Storyboard Report (${graph.rangeLabel})`,
+      `- PR Health Score: **${prMetrics.healthScore}/100** | Size: **${prMetrics.sizeGrade}** | Complexity Delta: **${prMetrics.complexityDelta >= 0 ? '+' : ''}${prMetrics.complexityDelta}**`,
       `- Files changed: ${graph.stats.filesChanged} | Symbols: ${graph.stats.symbolsChanged} | +${graph.stats.additions} / -${graph.stats.deletions}`,
       `- Impact breakdown: ${graph.stats.highImpactCount} high, ${graph.stats.mediumImpactCount} medium, ${graph.stats.lowImpactCount} low`,
       '',
       '## Recommended Review Order',
-      ...tourOrder.map((n, i) => `${i + 1}. \`${n.name}\` (\`${n.filePath}\`) — **${n.impact.toUpperCase()}** (risk ${n.impactScore}, +${n.additions}/-${n.deletions})`),
+      ...tourOrder.map((n, i) => {
+        const noteStr = reviewNotes[n.id]?.trim() ? ` — _Note: ${reviewNotes[n.id].trim()}_` : '';
+        return `${i + 1}. \`${n.name}\` (\`${n.filePath}\`) — **${n.impact.toUpperCase()}** (risk ${n.impactScore}, +${n.additions}/-${n.deletions})${noteStr}`;
+      }),
     ].join('\n');
     const blob = new Blob([lines], { type: 'text/markdown' });
     const a = document.createElement('a');
@@ -351,9 +361,19 @@ export function App() {
     return () => clearInterval(timer);
   }, [tourActive, tourIndex, tourOrder, focusNode]);
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts including Cmd/Ctrl+K Command Palette
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setCmdOpen((v) => !v);
+        setCmdQuery('');
+        return;
+      }
+      if (e.key === 'Escape' && cmdOpen) {
+        setCmdOpen(false);
+        return;
+      }
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) {
         return;
       }
@@ -767,6 +787,38 @@ export function App() {
         <SchemaDriftStudio />
       ) : (
       <>
+      {/* PR Health & Complexity Telemetry Ribbon */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-[#0F172A] px-4 py-1.5 text-[11px]">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono font-bold text-slate-300">
+            PR Health <span className={prMetrics.healthScore >= 80 ? 'text-emerald-400' : prMetrics.healthScore >= 60 ? 'text-amber-300' : 'text-rose-400'}>{prMetrics.healthScore}/100</span>
+          </span>
+          {prMetrics.summaryBadges.map((b) => (
+            <span
+              key={b.label}
+              className={`rounded-md border px-2 py-0.5 font-mono text-[10px] ${
+                b.tone === 'bad'
+                  ? 'border-rose-500/40 bg-rose-500/10 text-rose-300'
+                  : b.tone === 'warn'
+                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                    : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300'
+              }`}
+            >
+              {b.label}
+            </span>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setCmdOpen(true);
+            setCmdQuery('');
+          }}
+          className="rounded border border-slate-700 bg-[#090D16] px-2 py-0.5 font-mono text-[10px] text-slate-300 hover:border-sky-500"
+        >
+          ⌘K Command Palette
+        </button>
+      </div>
 
       {/* Paste Unified Diff Drawer */}
       {pasteOpen && (
@@ -1151,6 +1203,8 @@ export function App() {
             node={selectedNode}
             edges={graph.edges}
             nodesById={nodesById}
+            note={reviewNotes[selectedNode.id] ?? ''}
+            onUpdateNote={(nodeId, text) => setReviewNotes((prev) => ({ ...prev, [nodeId]: text }))}
             onSelectNode={(id) => {
               const target = nodesById.get(id);
               if (target) focusNode(target);
@@ -1160,6 +1214,50 @@ export function App() {
         )}
       </div>
       </>
+      )}
+
+      {/* Cmd+K Command Palette */}
+      {cmdOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center bg-black/65 pt-20 backdrop-blur-sm"
+          onClick={() => setCmdOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg overflow-hidden rounded-2xl border border-sky-500/40 bg-[#090D16] shadow-2xl"
+          >
+            <input
+              autoFocus
+              value={cmdQuery}
+              onChange={(e) => setCmdQuery(e.target.value)}
+              placeholder="Jump to symbol, switch layout, or open Schema Drift Studio..."
+              className="w-full border-b border-slate-800 bg-[#111827] px-4 py-3 font-mono text-xs text-slate-100 focus:outline-none"
+            />
+            <div className="max-h-72 overflow-y-auto p-2 space-y-1">
+              {nodes
+                .filter((n) => !cmdQuery.trim() || `${n.name} ${n.filePath}`.toLowerCase().includes(cmdQuery.toLowerCase()))
+                .slice(0, 8)
+                .map((n) => (
+                  <button
+                    key={n.id}
+                    type="button"
+                    onClick={() => {
+                      setAppMode('git-flow');
+                      focusNode(n);
+                      setCmdOpen(false);
+                    }}
+                    className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs hover:bg-slate-800/80"
+                  >
+                    <div>
+                      <div className="font-mono font-bold text-slate-100">{n.name}</div>
+                      <div className="font-mono text-[10px] text-slate-400">{n.filePath}</div>
+                    </div>
+                    <span className="font-mono text-[10px] text-sky-300">risk {n.impactScore}</span>
+                  </button>
+                ))}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
