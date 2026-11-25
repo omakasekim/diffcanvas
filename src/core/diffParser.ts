@@ -155,7 +155,7 @@ interface ExtractedSymbol {
 
 const IGNORE_NAMES = new Set([
   'if', 'else', 'for', 'while', 'switch', 'case', 'return', 'catch', 'try',
-  'await', 'async', 'new', 'typeof', 'const', 'let', 'var', 'function',
+  'await', 'async', 'new', 'typeof', 'const', 'let', 'var', 'function', 'constructor',
 ]);
 
 function detectSymbolInLine(rawLine: string): ExtractedSymbol | null {
